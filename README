@@ -1,0 +1,21 @@
+This is an implementation of ORDPATH encoding. ORDPATH was invented by
+Microsoft and was used in SQL server for compact storage of XML node
+labels. See article [http://www.cs.umb.edu/~poneil/ordpath.pdf] for
+details.
+
+The implementation was thoroughly coded to exhibit the top performance.
+Implementation is portable. Portions of the code were specifically
+writen to take advantage of SSE2 instruction set. SSE2 code is enabled
+at configuration time (ORDPATH_SSE2_BITBUF, ORDPATH_SSE2_SEARCHTREE
+configuration variables). By default portable standard-conformant code
+is used instead of SSE2-powered one.
+
+Currently GCC is the only compiler supported. Support for CL (the
+Microsoft compiler) is planned. We provide CMake project for building
+the library and running tests. (CMake is a cross-platform Makefile
+generator similar to GNU autotools).
+
+The library was writen by Nick Zavaritsky (mejedi@gmail.com) and is
+licensed under Apache License v2.0.
+
+Project page is located at http://libordpath.sourceforge.net.

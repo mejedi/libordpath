@@ -1,0 +1,144 @@
+LIBRARY REFERENCE
+
+* ordpath_strerror
+* ordpath_create
+* ordpath_destroy
+* ordpath_encode
+* ordpath_decode
+* ordpath-test (program)
+
+
+
+==== ORDPATH_STRERROR ====
+
+void
+ordpath_strerror(
+    ordpath_status_t status,
+    char buf[],
+    size_t bufsize);
+
+Converts error code obtained from an ORDPATH library function to error
+description string. Operates similarly to strerror_r().
+
+
+
+==== ORDPATH_CREATE ====
+
+ordpath_status_t
+ordpath_create(
+    ordpath_codec_t **pcodec,
+    const char setupstr[],
+    int64_t range[]);
+
+Creates 'codec' object. Codec setup is accepted in the string form.
+Setup string consists of the whitespace-separated list of interval
+specifications. Interval spec syntax is the following:
+"<prefix>:<width>" or "<prefix>:<width>:<origin>", where interval prefix
+is binary number and both interval width and interval origin are decimal
+numbers. Exactly one spec must include an origin.
+
+Ex:
+
+   "0000001 : 48     \
+    0000010 : 32     \
+    0000011 : 16     \
+    000010  : 12     \
+    000011  : 8      \
+    00010   : 6      \
+    00011   : 4      \
+    001     : 3      \
+    01      : 3 : 0  \
+    100     : 4      \
+    101     : 6      \
+    1100    : 8      \
+    1101    : 12     \
+    11100   : 16     \
+    11101   : 32     \
+    11110   : 48"
+
+The *range* argument is optional. If non-NULL range was passed, range[0]
+will contain the min- and range[1] will contain the max value the
+created codec can encode.
+
+
+
+==== ORDPATH_DESTROY ====
+
+void
+ordpath_destroy(
+    ordpath_codec_t *codec);
+
+Destroys *codec*.
+
+
+
+==== ORDPATH_ENCODE ====
+
+ordpath_status_t
+ordpath_encode(
+    const ordpath_codec_t *codec,
+    const int64_t label[],
+    size_t lablen,
+    char outbuf[],
+    size_t *poutbitlen);
+
+Encodes *label* of *lablen* length. Encoded label is rendered to
+*outbuf* buffer. The number of bits in the encoded label is stored in
+location pointed by *poutbitlen*.
+
+Output buffer must be aligned at ORDPATH_BUF_ALIGNMENT boundary.
+Function assumes that output buffer capacity is enough to store the
+result.
+
+Behavior is undefined if any label component is outside the range
+the codec can encode. We believe this limitation is OK. If a label was
+produced by ordpath_decode() it has all components in the valid range.
+If application generates a label it must ensure that all generated
+components belong to the valid range.
+
+
+
+==== ORDPATH_DECODE ===
+
+ordpath_status_t
+ordpath_decode(
+    const ordpath_codec_t *codec,
+    const char inbuf[],
+    size_t inbitlen,
+    int64_t label[],
+    size_t *plablen);
+
+Decodes an encoded label. Encoded label is stored in the *inbuf* buffer.
+The total number of bits in the encoded label is *inbitlen*. Decoded label
+is stored in *label* array. Label length is saved in location pointed by
+*plablen*.
+
+Input buffer must be aligned at ORDPATH_BUF_ALIGNMENT boundary.
+
+Function assumes that *label* array has enough capacity to store the
+result.
+
+Function is safe to call on an invalid or damaged encoded label.
+Function will reject invalid label and will return apropriate status.
+(No crashes or undefined behavior is expected.) Obviously a damaged
+encoded label could be still a valid encoded label. The later would
+decode successfully.
+
+
+
+==== ORDPATH-TEST (program) ====
+
+The library comes with ordpath-test program.
+
+The program can read a label from stdin or a file, encode it and write
+results to stdout or another file (pass --encode option).
+
+The program can decode labels (pass --decode option).
+
+The program has a builtin benchmark (pass --benchmark option; provide an
+encoded or raw label to be used in benchmark. 
+Ex: ordpath-test --benchmark --encode label001).
+
+The program can validate results produced by encoding/decoding against
+reference data (pass --reference-data <filename>).
+

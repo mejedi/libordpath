@@ -1,0 +1,230 @@
+LIBRARY INTERNALS (MEMO)
+
+==== 1  Encoder ====
+
+Encoder converts label components to variable length bitstrings one by
+one. An encoded component takes 1..63 bits. Encoded components are
+concatenated to produce the final result.
+
+Bitstrings are produced using a 'bitbuffer' (see section 3 for details).
+Bitbuffer is an integer variable capable of storing 64 bits of data.
+Encoder employs 2 bitbuffers. Encoded component is rendered to
+'ENC' buffer. Encoded components are combined using 'ACC' buffer.
+
+Data in both buffers is aligned to the left, unused low bits if any are
+set to zeroes. A variable 'accused' tracks the number of bits currently
+used in ACC buffer. The length of data contained in ENC buffer is stored
+in 'bitlen' variable.
+
+An encoded component is combined with the data currently in ACC buffer.
+The contents of ENC buffer are shifted right by accused amount and OR-ed
+with ACC buffer contents.  Accused is then incremented by bitlen amount.
+It is possible for ACC buffer to get full or overflow (accused >= 64).
+In the later case data from ACC buffer is flushed to memory. The portion
+of the encoded component that didn't fit the buffer (if any) is copied
+to ACC buffer and accused is adjusted accordingly. Let's consider the
+case of full or overflowing ACC buffer in greater detail.
+
+The length of the encoded component portion that didn't fit is (accused
+- 64). Obviously the equation to determine the fitting portion's length
+is (bitlen - (accused - 64)). To update the ACC buffer the data in ENC
+buffer is shifted left by (bitlen - (accused - 64)) amount thus
+discarding the portion that did fit and the resulting value is moved to
+ACC buffer.
+
+Note that due to constraints on the encoded component's length (<= 63)
+it is unnessesary to discriminate between the case of overflowing
+ACC buffer and the case of the full ACC buffer. If the buffer was just
+full ENC buffer contents is shifted left by bitlen amount yielding zero
+(bitlen - (accused - 64) == bitlen if accused == 64).
+
+
+
+==== 1.1  Encoding a component ====
+
+In order to encode a component the enclosing interval must be determined
+first. Two different search structures were implemented. The first one
+(see section 1.2) is generic. The second one (see section 1.3) was
+specifically developed to take advantage of SSE2 instruction set. The
+later is enabled with ORDPATH_SSE2_SEARCHTREE configuration variable.
+
+Encoded component is produced by concatenation of the interval-specific
+bit prefix with the displacement relative to the interval origin.
+
+    encoded = prefix | (value - origin)
+
+We can rewrite the expression as follows:
+
+    encoded = prefix + (value - origin) = value + (prefix - origin)
+
+We precompute (prefix - origin) value at codec creation time and later
+refer to it as **bias**.
+
+
+
+==== 1.2  Interval Heap ====
+
+Interval heap is used to determine enclosing intervals during encoding
+process. Strictly speaking the structure is NOT a binary heap but rather
+a binary search tree stored in a linear array according to the rules
+similar to binary heap definition:
+    * tree root is in cell 1
+    * a node stored in cell n has the left child in cell 2n and the
+      right one in cell 2n+1
+
+.....................................................................
+
+                           <5>
+                          /   \
+[1,2] [3,4] [5,6]       <3>   [5,6]    <5>, <3>,   [5,6], [1,2], [3,4]
+                       /   \                     .......................
+                    [1,2] [3,4]                  \_not_actually_stored_/
+
+
+      (a)                  (b)                      (c)
+
+    (a) three intervals
+    (b) intervals organized in a search tree
+    (c) search tree stored in array (heap-like)
+
+.....................................................................
+
+So it works like that:
+    * start from the root (heapind <- 1);
+    * if the component being matched is greater or equal than the node's
+      value move to the right child (heapind <- heapind*2 + 1);
+      otherwize navigate to the left (heapind <- heapind*2);
+    * repeat the previous step while heapind is a valid array index
+    * subtract the array length from heapind, that will be the index of
+      the enclosing interval in intervals table
+
+Example:
+    Matched value is 6. From the root (5, heapind=1) navigate to the
+    right child (heapind=3). Tree traversal is complete (array has only
+    2 elements). Interval index is 1.
+
+Example:
+    Matched value is 3. From the root (5, heapind=1) navigate to the
+    left (3, heapind=2) and then to the right (heapind=5). Tree
+    traversal is complete. Interval index is 3.
+
+Concerning the figure above one may notice that intervals go in somewhat
+funny order ([5,6], [1,2], [3,4]). That is the artifact of the search
+tree to linear array mapping. Interval table is built to match that
+order.
+
+
+
+==== 1.3  Interval 5tree (SSE2) ====
+
+A distinct search structure was developed to take advantage of SSE2. A
+search tree with the fanout of 5 is built (a node stores 4 values and
+has 5 children). SSE2 allows to compare 4 values simultaneously yielding
+a bitmask. The bitmask is easily converted into the index of a child
+node to be followed. The depth of search tree is fixed (depth is 2,
+supporting max 25 intervals, if there are fewer intervals bogus ones are
+created). The fixed depth allows for efficient unrolling of the tree
+traversal loop.
+
+
+
+==== 2  Decoder ====
+
+Decoder splits an encoded label into a list of bitstrings, one for every
+component encoded. Encoded label is loaded into ACC bitbuffer in 64 bit
+portions. During decoding one or more bits is claimed from ACC bitbuffer
+to form the next encoded component. The number of bits availible from
+the bitbuffer decreases (the number of bits availible is stored in
+accused variable). Data in ACC is aligned to the right, unused low bits
+are set to zero. Obviously sometimes an encoded component spans two
+adjacent 64 bit quantities. In the later case ACC buffer has to be
+reloaded in order to provide missing bits.
+
+To split the next encoded component the high byte is extracted from ACC
+and is used to index the lookup table yielding interval index. It is
+possible to build such a table since every interval is encoded using the
+unique prefix. All invalid bit sequences maps to interval #0. Interval
+#0 is reserved for this sole purpose.
+
+It is impossible to tell whether ACC has enough bits to form the next
+encoded component before the lookup table is consulted. As soon as
+interval index is known the encoded component bit length is known as
+well. The tricky part is that ACC may contain only a part of the prefix
+(missing bits substituted with zeroes). The question is what will be the
+result of the table lookup using incomplete data?
+
+Basically there are 2 possibilities here:
+    * either the bit pattern is invalid, hence interval #0 is returned.
+      Interval #0 is assigned a ridiculously high bitlen (10000) which is
+      greater than the number of bits availible from ACC;
+    * or the bit pattern is valid, some arbitrary interval #n is
+      returned. Assume the next encoded component belongs to interval
+      #m. If #n==#m then #n's bitlen is greater than accused (by the
+      problem definition). If #n and #m are distinct #n is encoded with
+      a prefix longer than accused (otherwize the assumption of
+      prefix-free encoding is violated). Hence #n's bitlen is greater
+      than accused.
+
+Decoder notices that the next encoded component's bit length is greater
+than accused and reloads ACC. Lookup table must be consulted again since
+the previous result may be incorrect.
+
+
+
+==== 3  Bit buffer ====
+
+Bit buffer is basically an integer variable capable of storing 64 bits
+of data and supporting some operations (bitwize-OR, shifts, etc).
+Depending on the configuration, bitbuf_t is either an alias for int64_t
+or a moniker for SSE register.
+
+The following operations are defined:
+    * bb_zero     (initialize with zero)
+    * bb_load     (load value from memory)
+    * bb_store    (store value to memory)
+    * bb_load_be  (load value from memory, big endian byteorder)
+    * bb_store_be (store value to memory, big endian byteorder)
+    * bb_to_int   (convert to int, high bits lost)
+    * bb_add
+    * bb_sub
+    * bb_or
+    * bb_shl
+    * bb_shr
+    * bb_cleanup  (cleanup CPU state after the use of extensions,
+                   normally noop)
+
+
+
+==== 4  Internal limits and their relations ====
+
+    PREFIX_LEN_MAX (8)              - max prefix length
+
+    INTERVAL_WIDTH_MAX (55)         - max bits used to represent
+                                      displacement relative to the
+                                      interval origin
+
+    INTERVAL_NUM_MAX (20)           - max number of intervals
+
+    VALID_RANGE_MIN (INT64_MIN/2)   - min value of a component the
+                                      library can handle
+
+    VALID_RANGE_MAX (INT64_MAX/2)   - max value of a component the
+                                      library can handle
+
+
+PREFIX_LEN_MAX is limited in order to restrict the size of decoder
+lookup table. PREFIX_LEN_MAX together with INTERVAL_WIDTH_MAX define the
+max length of an encoded component. Implementation is unable to handle
+encoded components longer than 63 bits.
+
+The number of intervals (INTERVAL_NUM_MAX) is limited in order to allow
+the fast SSE2-powered search of the enclosing interval by the encoder.
+Additionally this limit allows simplified calculations during setup
+since the possibility for integer overflow is eliminated.
+
+Valid range is limited (VALID_RANGE_MIN, VALID_RANGE_MAX) due to the
+limitations of SSE2-powered search of the enclosing interval (unable to
+compare 64 bit integers only subtract, if integer overflow happens
+results are useless). This limit also eliminates another possibility for
+integer overlow during setup.
+
