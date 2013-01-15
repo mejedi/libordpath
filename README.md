@@ -12,8 +12,8 @@ server for compact storage of XML node labels.
 Node label is a variable length octet string.  The label encodes certain
 information instantly available without traversing the XML tree. In particular:
 
-1. The label is a node identity.  Queries against XML data requires the
-   elimination of duplicates according to XPath/XQuery spec.
+1. The label is a node identity.  Queries against XML data often requires the
+   elimination of duplicates from the result sequence.
 
 2. Given nodes N1 and N2 it is possible to determine if N1 precedes N2 in
    the XML document using the labels alone.
